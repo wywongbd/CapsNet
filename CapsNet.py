@@ -73,7 +73,7 @@ class CapsuleNet:
 															self.routing_loop_body, 
 															[raw_weights, layers['caps2_predicted'], dummy_init, iteration])
 
-
+		# Compute class scores
 		layers['y_prob'] = self.safe_norm(s=layers['caps2_output'], axis=-2)
 		layers['y_pred'] = tf.squeeze(tf.argmax(layers['y_prob'], axis=2), axis=[1,2], name='y_pred')
 		
@@ -88,20 +88,24 @@ class CapsuleNet:
 		layers['L'] = tf.add(self.labels_one_hot * present_error, 0.5 * (1.0 - self.labels_one_hot) * absent_error, name="L")
 		self.margin_loss = tf.reduce_mean(tf.reduce_sum(layers['L'], axis=1), name="margin_loss")
 
+		# According to the paper, during the training procedure, only the output vector of the capsule that corresponds to the target digit is sent to decoder
+		# We need to 'mask' other values
 		self.mask_with_labels = tf.placeholder_with_default(False, shape=(), name="mask_with_labels")
 		reconstruction_targets = tf.cond(self.mask_with_labels, lambda: self.labels, lambda: layers['y_pred'], name="reconstruction_targets")
 		reconstruction_mask = tf.one_hot(reconstruction_targets, depth=10, name="reconstruction_mask")
 		reconstruction_mask_reshaped = tf.reshape(reconstruction_mask, [-1, 1, 10, 1, 1], name="reconstruction_mask_reshaped")
 		caps2_output_masked = tf.multiply(layers['caps2_output'], reconstruction_mask_reshaped, name="caps2_output_masked")
-		
-		decoder_input = tf.reshape(caps2_output_masked, [-1, 160], name="decoder_input")
+				
+		layers['decoder_input'] = tf.reshape(caps2_output_masked, [-1, 160], name="decoder_input")
 
-		hidden1 = tf.layers.dense(decoder_input, 512, activation=tf.nn.relu, name="hidden1")
-		hidden2 = tf.layers.dense(hidden1, 1024, activation=tf.nn.relu, name="hidden2")
-		decoder_output = tf.layers.dense(hidden2, 28*28, activation=tf.nn.sigmoid, name="decoder_output")
+		# Two fully connected hidden layers with 512 and 1024 neurons
+		layers['hidden1'] = tf.layers.dense(layers['decoder_input'], 512, activation=tf.nn.relu, name="hidden1")
+		layers['hidden2'] = tf.layers.dense(layers['hidden1'], 1024, activation=tf.nn.relu, name="hidden2")
+		layers['decoder_output'] = tf.layers.dense(layers['hidden2'], 28*28, activation=tf.nn.sigmoid, name="decoder_output")
 
+		# Compute reconstruction loss
 		imgs_flat = tf.reshape(self.imgs, [-1, 28*28], name="imgs_flat")
-		squared_difference = tf.square(imgs_flat - decoder_output, name="squared_difference")
+		squared_difference = tf.square(imgs_flat - layers['decoder_output'], name="squared_difference")
 		self.reconstruction_loss = tf.reduce_sum(squared_difference, name="reconstruction_loss")
 
 		self.loss = tf.add(self.margin_loss, 0.005 * self.reconstruction_loss, name="loss")
@@ -120,6 +124,7 @@ class CapsuleNet:
 		return tf.less(counter, 3)
 
 	def routing_loop_body(self, raw_weights, caps2_predicted, caps2_output, counter):
+		# loop body of routing by agreement algorithm
 		routing_weights = tf.nn.softmax(raw_weights, dim=2, name="routing_weights")
 		weighted_predictions = tf.multiply(routing_weights, caps2_predicted, name="weighted_predictions")
 		weighted_sum = tf.reduce_sum(weighted_predictions, axis=1, keep_dims=True, name="weighted_sum")
@@ -130,6 +135,8 @@ class CapsuleNet:
 
 	def squash(self, s, axis=-1, eps=1e-7):
 		squared_norm = tf.reduce_sum(tf.square(s), axis=axis, keep_dims=True)
+
+		# epsilon to prevent division by zero
 		safe_norm = tf.sqrt(squared_norm + eps)
 		squash_factor = squared_norm / (1. + squared_norm)
 		unit_vector = s / safe_norm
@@ -138,4 +145,6 @@ class CapsuleNet:
 
 	def safe_norm(self, s, axis=-1, epsilon=1e-7, keep_dims=False, name=None):
 		squared_norm = tf.reduce_sum(tf.square(s), axis=axis, keep_dims=keep_dims)
+
+		# epsilon to prevent division by zero in later steps
 		return tf.sqrt(squared_norm + epsilon)
